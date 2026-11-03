@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tsinfer-anc-evaluation"
+version = "0.0.0"
+description = "Ancestor-evaluation pipeline for tsinfer"
+requires-python = ">=3.11"
+dependencies = [
+    "click",
+    "numpy>=2",
+    "numba",
+    "tqdm",
+    "tskit>=1.0.0",
+    "zarr<3",
+    "bio2zarr",
+    "pandas",
+    "msprime>=1.4.2",
+    "stdpopsim>=0.3.0",
+    "sgkit==0.10.0",
+    "snakemake",
+    "pyyaml",
+    "xarray",
+    "pytest",
+    "six>=1.17.0",
+    "humanize>=4.16.0",
+    "daiquiri>=3.4.0",
+    "lmdb>=2.3.0",
+    "sortedcontainers>=2.4.0",
+    "attrs>=19.2.0",
+    "psutil>=5.9.0",
+]
+
+[dependency-groups]
+lint = [
+    "prek==0.3.3",
+    "ruff==0.15.1",
+]
+[tool.uv]
+default-groups = ["lint"]
+
+[tool.setuptools]
+packages = ["lib"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 89
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
