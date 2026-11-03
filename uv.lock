@@ -2361,9 +2361,9 @@ wheels = [
 ]
 
 [[package]]
-name = "tsinfer-anc-evaluation"
+name = "tsinfer-perf-benchmark"
 version = "0.0.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "attrs" },
     { name = "bio2zarr" },

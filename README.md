@@ -1,106 +1,68 @@
-# Ancestor inference performance
+# tsinfer performance benchmark
 
-Run from this folder inside an exclusive 196-CPU, 1-TB allocation:
+Benchmark ancestor generation, ancestor matching and sample matching across
+built tsinfer checkouts. The example covers four simulation sample sizes and
+1KGP chr20p, with one repetition per dataset and version.
 
-```sh
-uv run --project /well/kelleher/users/uuc395/tsinfer-anc-eval --no-sync \
-    snakemake --cores 196 --resources mem_mb=950000 --printshellcmds
-```
-
-Every rule reserves all configured cores and memory, so the command above runs
-one job at a time. Keep the command's totals equal to `config.yaml` resources.
-These are scheduling reservations, not an enforced RAM limit. `time_min` is
-metadata for cluster submission; the local executor uses the allocation's walltime.
-
-The workflow uses the existing tsinfer-anc-eval environment because these
-releases require Zarr 2. Do not run the worker script in dphil-analysis's Zarr 3
-environment. Each stage uses a fresh process with the configured tsinfer directory
-on `PYTHONPATH`, without checking Git tags. Both checkouts
-must be built for the environment's Python and NumPy.
-
-`datasets` lists haploid sample counts. The input filename's `n` is half
-that count (diploid individuals). The input glob must match exactly one Zarr
-dataset per `n`. Default datasets contain 100,
-1,000, 10,000 and 100,000 haplotypes, with the same input used for both versions.
-Edit paths and inference settings in `config.yaml` before starting. For a rerun
-with changed scientific settings, choose a new `output_dir`.
-
-For 1KGP chr20p, use the prepared pipeline Zarr and its stored masks:
+From this directory:
 
 ```sh
-uv run --project /well/kelleher/users/uuc395/tsinfer-anc-eval --no-sync \
-    snakemake --configfile config.yaml.1kgp \
-    --cores 196 --resources mem_mb=950000 --quiet rules --show-failed-logs
+uv sync --locked
+uv run snakemake --cores 196 --resources mem_mb=950000 --printshellcmds
 ```
 
-`config.yaml.1kgp` selects 6,404 haplotypes and the 504,149 sites retained by
-`variant_1kgp_all_subset_chr20p_region_filterNton23_mask`, together with
-`sample_1kgp_all_subset_mask`. Mask values of true exclude entries. No mask
-generation or other data preparation is run. The absolute `zarr_pattern` needs
-no filename wildcard for this single dataset. Ancestor and sample matching run
-in a single process per stage, using the same threaded API as the simulations.
-The 0.5.1 checkout should be the built 0.5.x backport used for the comparison.
-Results go to `results_1kgp/`, separate from the simulations.
+The workflow defaults to `config.yaml.example`, the only tracked config. Edit
+its paths, or copy it to `config.yaml` and pass `--configfile config.yaml`.
+Each dataset supplies a fixed `zarr_path`, independent haploid `sample_size`,
+output `prefix`, ancestral state and mask array names, and `num_reps`.
+Reps run from 0 to `num_reps - 1` on the same input for every version.
+Prefix and sample size together identify a dataset. Output filename `n` counts
+haplotypes; simulation input filename `n` counts diploid individuals.
 
-Extract the full ancestor span for each focal site in every version from this
-folder, using either built legacy checkout with the benchmark environment:
+Optional per-dataset `sequence_length` overrides the Zarr contig length. The
+simulations retain 28,100,000 bp because their stored contig can describe the
+full chromosome. Null or omitted uses the stored length; 1KGP keeps 64,444,167 bp
+with masks selecting chr20p. Mask values of true exclude entries. Per-dataset
+`precision` preserves the simulation default (null) and 1KGP precision (15).
+
+The dependencies and lockfile come from tsinfer-anc-eval and use Zarr 2, required
+by these releases. Build each configured tsinfer checkout for the environment's
+Python and NumPy. Workers use the Python running Snakemake and select checkouts
+through `PYTHONPATH`. To reuse an existing anc-eval environment, replace
+`uv run` above with `uv run --project /path/to/tsinfer-anc-eval --no-sync`.
+
+Run within an exclusive allocation, keeping command resource totals equal to
+the config. Each job reserves all configured cores and memory, so stages run
+sequentially in fresh processes. Memory is a scheduling reservation; `time_min`
+is cluster submission metadata. Sample matching omits post-processing.
+
+Outputs under `data/` (or `output_dir`) use `<prefix>-n<n>-rep<rep>-v<version>-<suffix>`:
+
+- `ancestors/`: `ancestors.zarr` (a Zarr-backed LMDB file) and
+  `ancestors.trees`.
+- `trees/`: `raw.trees` from sample matching.
+- `.progress/`: `<stage>.log`.
+- `dataframes/`: `perf.csv`, with one row per inference stage.
+- `dataframes/perf-v<version>.csv` and `dataframes/perf_combined.csv`: combined
+  tables retaining every repetition.
+
+Version labels are configured as `"0.4"` and `"0.5"`, giving filenames such as
+`1kgp-chr20-L0-R2.81e7-n6404-rep0-v0.5-raw.trees`.
+
+All performance tables include `prefix`, `sample_size`, and `rep`.
+`num_samples` is the observed haploid count and equals `sample_size`.
+Times are seconds and peak memory is bytes. API timers exclude startup, input
+loading and output writing; peak memory includes input loading. Configured
+`version` and original `provenance_version` are both retained. Choose a new
+output directory after changing scientific settings.
+
+Optional focal-site spans, using either built legacy checkout:
 
 ```sh
-PYTHONPATH=/well/kelleher/users/uuc395/tsinfer_0_5_1 \
-uv run --project /well/kelleher/users/uuc395/tsinfer-anc-eval --no-sync \
-    python extract_spans.py results_1kgp
+PYTHONPATH=/path/to/built/tsinfer uv run python scripts/extract_spans.py data
 ```
 
-This writes `results_1kgp/ancestor_spans.csv` by reading each
-`<version>/n<count>/ancestors.ancestors` store; it does not require matching to
-have completed or the original variant Zarr. Both benchmark versions share this
-ancestor format, so one checkout reads both. The importable
-`extract_spans(output_dir)` function returns the same pandas dataframe.
-These stores are the benchmark's equivalent of the pipeline's ancestor Zarr.
-
-Columns follow tsinfer-anc-eval: `version`, `num_samples`, `inferred_node`
-(ancestor ID), `inf_focal_site` (ID within the store's inference sites),
-`focal_position`, `inferred_time`, `inferred_span` (bp), and
-`inferred_site_span` (number of inference sites). Each row describes the full
-ancestor, with no `side` column. Multiple focal sites belonging to the same
-ancestor each receive a row; artificial roots without focal sites are omitted.
-For the half-open inference-site interval `[start, end)`, the span is
-`positions[end - 1] - positions[start]`: the distance between its first and
-last included inference sites. A one-site ancestor has span zero. Neither
-the next site's position nor the stored sequence length enters the span
-calculation. Spans use each version's own inference sites.
-
-The 1KGP config uses `variant_ancestral_allele` and precision 15, matching the
-batch pipeline. `sequence_length: null` preserves the Zarr contig length
-(64,444,167 bp), while the site mask selects chr20p. The simulation config
-retains its previous default precision and has both masks set to null.
-
-Outputs are retained under `results/`:
-
-- `<version>/n<count>/ancestors.ancestors`: generated ancestors (an LMDB file).
-- `<version>/n<count>/ancestors.trees`: matched ancestors.
-- `<version>/n<count>/inferred.trees`: matched samples, without post-processing.
-- `<version>/n<count>/*.log`: logs for each inference stage.
-- `<version>/n<count>/perf.csv`: three provenance rows, one per stage.
-- `perf_0.4.1.csv`, `perf_0.5.1.csv`, `perf_combined.csv`: aggregate tables.
-
-INFO logging reports ancestor-building and ancestor-matching activity. During
-sample matching, the tsinfer inference logger is set to WARNING to avoid its two
-INFO messages per haplotype; stage start/end messages remain. Progress bars and
-DEBUG logging are disabled. Helper library threads are limited to one, while
-`num_threads` is passed to all three inference calls.
-
-Performance columns match tsinfer-paper's `data/eval/perf_combined.csv`, with
-additional site count, thread count, hostname and original provenance version.
-Times are seconds and `max_memory` is bytes. Metrics come directly from the
-inherited provenance in the final tree sequence. Timers cover the inference API
-calls, not all input loading, script startup or output writing. Peak memory is
-the process lifetime maximum, including input loading; separate processes prevent
-an earlier inference stage's peak from contaminating the next stage.
-
-Some source checkouts report `undefined` in provenance. `version` uses the
-configured version label and `provenance_version` retains the original string.
-The paper's `viz.plot_perf` currently hardcodes 0.5.0/1.0 as the new version;
-update that selection to 0.5.1 and select the two matching commands to reproduce
-its original comparison. The CSV also includes `generate_ancestors` for a
-three-stage comparison.
+This writes `data/dataframes/ancestor_spans.csv` with the same run identity
+columns. Spans measure the distance between the first and last included
+inference sites. Existing grouping analysis tables are retained in
+`data/dataframes/analysis/`.

@@ -1,15 +1,41 @@
-"""Run inside an exclusive allocation; every job reserves the whole allocation."""
+"""Run each benchmark repetition as three separately measured inference stages."""
 
 import pathlib
+import re
 import shlex
+import sys
 
-configfile: "config.yaml"
+configfile: "config.yaml.example"
 
 output_dir = config["output_dir"]
-config_path = workflow.configfiles[0]
+config_path = workflow.configfiles[-1]
 threads_per_job = config["resources"]["threads"]
 memory_per_job = config["resources"]["mem_mb"]
 time_per_job = config["resources"]["time_min"]
+worker = pathlib.Path(workflow.basedir) / "anc_perf.py"
+
+# A prefix can be shared by different sample sizes, but each pair is unique.
+datasets = {}
+for dataset in config["datasets"]:
+    key = (dataset["prefix"], dataset["sample_size"])
+    if key in datasets:
+        raise ValueError(f"Duplicate dataset: {key}")
+    if dataset["sample_size"] < 1 or dataset["num_reps"] < 1:
+        raise ValueError(f"sample_size and num_reps must be positive: {key}")
+    datasets[key] = dataset
+
+run_name = "{prefix}-n{sample_size}-rep{rep}-v{version}"
+ancestor_store = f"{output_dir}/ancestors/{run_name}-ancestors.zarr"
+ancestor_trees = f"{output_dir}/ancestors/{run_name}-ancestors.trees"
+raw_trees = f"{output_dir}/trees/{run_name}-raw.trees"
+performance = f"{output_dir}/dataframes/{run_name}-perf.csv"
+progress = f"{output_dir}/.progress/{run_name}"
+
+wildcard_constraints:
+    version="|".join(re.escape(version) for version in config["versions"]),
+    prefix="|".join(re.escape(dataset["prefix"]) for dataset in config["datasets"]),
+    sample_size=r"\d+",
+    rep=r"\d+",
 
 shell.prefix(
     "set -euo pipefail; "
@@ -21,36 +47,46 @@ shell.prefix(
 
 
 def zarr_path(wildcards):
-    num_samples = int(wildcards.num_samples)
-    n = num_samples // 2
-    pattern = pathlib.Path(config["zarr_pattern"].format(n=n))
-    paths = list(pattern.parent.glob(pattern.name))
-    if len(paths) != 1:
-        raise ValueError(f"Expected one dataset for n={n}, found {len(paths)}: {pattern}")
-    return str(paths[0])
+    dataset = datasets[(wildcards.prefix, int(wildcards.sample_size))]
+    if int(wildcards.rep) >= dataset["num_reps"]:
+        raise ValueError(f"Repetition outside num_reps: {wildcards.rep}")
+    return dataset["zarr_path"]
 
 
 def runner(version):
     installation = config["versions"][version]
     return (
-        f"PYTHONPATH={shlex.quote(installation)} uv run "
-        f"--project {shlex.quote(config['runtime_project'])} --no-sync "
-        "python anc_perf.py"
+        f"PYTHONPATH={shlex.quote(installation)} "
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(worker))}"
     )
+
+
+def performance_inputs(wildcards):
+    paths = []
+    for dataset in config["datasets"]:
+        for rep in range(dataset["num_reps"]):
+            path = performance.format(
+                version=wildcards.version,
+                prefix=dataset["prefix"],
+                sample_size=dataset["sample_size"],
+                rep=rep,
+            )
+            paths.append(path)
+    return paths
 
 
 rule all:
     input:
-        f"{output_dir}/perf_combined.csv",
+        f"{output_dir}/dataframes/perf_combined.csv",
 
 
 rule generate_ancestors:
     input:
         zarr=zarr_path,
     output:
-        f"{output_dir}/{{version}}/n{{num_samples}}/ancestors.ancestors",
+        ancestor_store,
     log:
-        f"{output_dir}/{{version}}/n{{num_samples}}/generate_ancestors.log",
+        f"{progress}-generate_ancestors.log",
     threads: threads_per_job
     resources:
         mem_mb=memory_per_job,
@@ -60,18 +96,19 @@ rule generate_ancestors:
         config=config_path,
     shell:
         "{params.runner} generate_ancestors --config {params.config:q} "
-        "--zarr {input.zarr:q} --output {output:q} --version {wildcards.version} "
-        "--num-samples {wildcards.num_samples} --threads {threads} > {log:q} 2>&1"
+        "--output {output:q} --version {wildcards.version:q} "
+        "--prefix {wildcards.prefix:q} --sample-size {wildcards.sample_size} "
+        "--rep {wildcards.rep} --threads {threads} > {log:q} 2>&1"
 
 
 rule match_ancestors:
     input:
         zarr=zarr_path,
-        ancestors=f"{output_dir}/{{version}}/n{{num_samples}}/ancestors.ancestors",
+        ancestors=ancestor_store,
     output:
-        f"{output_dir}/{{version}}/n{{num_samples}}/ancestors.trees",
+        ancestor_trees,
     log:
-        f"{output_dir}/{{version}}/n{{num_samples}}/match_ancestors.log",
+        f"{progress}-match_ancestors.log",
     threads: threads_per_job
     resources:
         mem_mb=memory_per_job,
@@ -81,19 +118,20 @@ rule match_ancestors:
         config=config_path,
     shell:
         "{params.runner} match_ancestors --config {params.config:q} "
-        "--zarr {input.zarr:q} --input {input.ancestors:q} --output {output:q} "
-        "--version {wildcards.version} --num-samples {wildcards.num_samples} "
+        "--input {input.ancestors:q} --output {output:q} "
+        "--version {wildcards.version:q} --prefix {wildcards.prefix:q} "
+        "--sample-size {wildcards.sample_size} --rep {wildcards.rep} "
         "--threads {threads} > {log:q} 2>&1"
 
 
 rule match_samples:
     input:
         zarr=zarr_path,
-        ancestors=f"{output_dir}/{{version}}/n{{num_samples}}/ancestors.trees",
+        ancestors=ancestor_trees,
     output:
-        f"{output_dir}/{{version}}/n{{num_samples}}/inferred.trees",
+        raw_trees,
     log:
-        f"{output_dir}/{{version}}/n{{num_samples}}/match_samples.log",
+        f"{progress}-match_samples.log",
     threads: threads_per_job
     resources:
         mem_mb=memory_per_job,
@@ -103,16 +141,17 @@ rule match_samples:
         config=config_path,
     shell:
         "{params.runner} match_samples --config {params.config:q} "
-        "--zarr {input.zarr:q} --input {input.ancestors:q} --output {output:q} "
-        "--version {wildcards.version} --num-samples {wildcards.num_samples} "
+        "--input {input.ancestors:q} --output {output:q} "
+        "--version {wildcards.version:q} --prefix {wildcards.prefix:q} "
+        "--sample-size {wildcards.sample_size} --rep {wildcards.rep} "
         "--threads {threads} > {log:q} 2>&1"
 
 
 rule extract_performance:
     input:
-        f"{output_dir}/{{version}}/n{{num_samples}}/inferred.trees",
+        raw_trees,
     output:
-        f"{output_dir}/{{version}}/n{{num_samples}}/perf.csv",
+        performance,
     threads: threads_per_job
     resources:
         mem_mb=memory_per_job,
@@ -121,19 +160,16 @@ rule extract_performance:
         config=config_path,
     shell:
         "{params.runner} extract --config {params.config:q} --input {input:q} "
-        "--output {output:q} --version {wildcards.version} "
-        "--num-samples {wildcards.num_samples} --threads {threads}"
+        "--output {output:q} --version {wildcards.version:q} "
+        "--prefix {wildcards.prefix:q} --sample-size {wildcards.sample_size} "
+        "--rep {wildcards.rep} --threads {threads}"
 
 
 rule aggregate_version:
     input:
-        lambda wildcards: expand(
-            f"{output_dir}/{{version}}/n{{num_samples}}/perf.csv",
-            version=wildcards.version,
-            num_samples=config["datasets"],
-        ),
+        performance_inputs,
     output:
-        f"{output_dir}/perf_{{version}}.csv",
+        f"{output_dir}/dataframes/perf-v{{version}}.csv",
     threads: threads_per_job
     resources:
         mem_mb=memory_per_job,
@@ -147,9 +183,11 @@ rule aggregate_version:
 
 rule aggregate_all:
     input:
-        expand(f"{output_dir}/perf_{{version}}.csv", version=config["versions"]),
+        expand(
+            f"{output_dir}/dataframes/perf-v{{version}}.csv", version=config["versions"]
+        ),
     output:
-        f"{output_dir}/perf_combined.csv",
+        f"{output_dir}/dataframes/perf_combined.csv",
     threads: threads_per_job
     resources:
         mem_mb=memory_per_job,
