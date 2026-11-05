@@ -1,4 +1,4 @@
-"""Extract ancestor spans between their first and last inference sites."""
+"""Extract ancestor spans using exclusive site boundaries."""
 
 import argparse
 import logging
@@ -23,9 +23,10 @@ def extract_spans(output_dir):
     identifying the benchmark run. ``inf_focal_site`` indexes the ancestor
     store's inference sites; ``inferred_node`` is its ancestor ID. For the
     half-open interval [start, end), ``inferred_span`` is the distance in bp
-    between positions[end - 1] and positions[start], while
-    ``inferred_site_span`` counts included inference sites. A one-site
-    ancestor has span zero. Sequence length is not used in this calculation.
+    between positions[end] and positions[start], with an extra terminal
+    position equal to the last stored inference-site position plus 1 bp.
+    ``inferred_site_span`` counts included inference sites as end - start.
+    The first position is retained unchanged; sequence length is not used.
     Each focal site contributes one row; ancestors without focal sites,
     including the artificial roots, contribute none.
     """
@@ -58,8 +59,8 @@ def extract_spans(output_dir):
             ancestor_ids = np.arange(ancestors.num_ancestors)
             inferred_node = np.repeat(ancestor_ids, counts)
             inf_focal_site = np.concatenate(focal_sites).astype(int)
-            last_site = end - 1
-            spans = positions[last_site] - positions[start]
+            boundaries = np.append(positions, positions[-1] + 1)
+            spans = boundaries[end] - boundaries[start]
             site_spans = end - start
             frame = pd.DataFrame(
                 {
