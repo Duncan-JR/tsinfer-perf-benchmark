@@ -2,7 +2,8 @@
 
 Benchmark ancestor generation, ancestor matching and sample matching across
 built tsinfer checkouts. The example covers four simulation sample sizes and
-1KGP chr20p, with one repetition per dataset and version.
+1KGP chr20p, with three repetitions for n=100, n=1,000 and 1KGP,
+and one repetition for n=10,000 and n=100,000 per version.
 
 From this directory:
 

@@ -7,7 +7,7 @@ datasets:
     ancestral_state: variant_mispolarised_ancestral_state
     site_mask: null
     sample_mask: null
-    num_reps: 1
+    num_reps: 3
     sequence_length: 28100000
     precision: null
 
@@ -17,7 +17,7 @@ datasets:
     ancestral_state: variant_mispolarised_ancestral_state
     site_mask: null
     sample_mask: null
-    num_reps: 1
+    num_reps: 3
     sequence_length: 28100000
     precision: null
 
@@ -48,7 +48,7 @@ datasets:
     ancestral_state: variant_ancestral_allele
     site_mask: variant_1kgp_all_subset_chr20p_region_filterNton23_mask
     sample_mask: sample_1kgp_all_subset_mask
-    num_reps: 1
+    num_reps: 3
     # Read the full contig length from the Zarr; the mask selects chr20p.
     sequence_length: null
     precision: 15
